@@ -1,0 +1,53 @@
+--- a/net/mac80211/iface.c	2024-11-08 09:25:56.000000000 -0600
++++ b/net/mac80211/iface.c	2024-11-20 15:03:48.020768271 -0600
+@@ -10,6 +10,7 @@
+  * Copyright (c) 2016        Intel Deutschland GmbH
+  * Copyright (C) 2018-2023 Intel Corporation
+  */
++#include <linux/bpf_trace.h>
+ #include <linux/slab.h>
+ #include <linux/kernel.h>
+ #include <linux/if_arp.h>
+@@ -858,6 +859,33 @@
+ 	return drv_net_setup_tc(local, sdata, dev, type, type_data);
+ }
+ 
++static int generic_xdp_setup(struct net_device *ndev, struct bpf_prog *prog)
++{
++	struct bpf_prog *old_prog;
++	if (prog) {
++		bpf_prog_add(prog, 1);
++		if (IS_ERR(prog))
++			return -EINVAL;
++	}
++	/* attach BPF program */
++	old_prog = xchg(&ndev->xdp_prog, prog);
++	if (old_prog)
++		bpf_prog_put(old_prog);
++	return 0;
++}
++static int ieee80211_xdp(struct net_device *dev, struct netdev_bpf *xdp)
++{
++   int res;
++   switch (xdp->command) {
++   case XDP_SETUP_PROG:
++        pr_info("setup prog");
++        res = generic_xdp_setup(dev, xdp->prog);
++        pr_info("res of setup prog %d", res);
++        return res;
++   }
++   return 0;
++}
++
+ static const struct net_device_ops ieee80211_dataif_ops = {
+ 	.ndo_open		= ieee80211_open,
+ 	.ndo_stop		= ieee80211_stop,
+@@ -867,6 +895,8 @@
+ 	.ndo_set_mac_address 	= ieee80211_change_mac,
+ 	.ndo_get_stats64	= ieee80211_get_stats64,
+ 	.ndo_setup_tc		= ieee80211_netdev_setup_tc,
++	.ndo_bpf            = ieee80211_xdp,
++
+ };
+ 
+ static u16 ieee80211_monitor_select_queue(struct net_device *dev,

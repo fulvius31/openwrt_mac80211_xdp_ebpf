@@ -1,0 +1,63 @@
+--- a/net/mac80211/rx.c 2024-11-08 09:25:57.000000000 -0600
++++ b/net/mac80211/rx.c 2024-11-20 15:14:05.145628421 -0600
+@@ -8,12 +8,11 @@
+  * Copyright(c) 2015 - 2017 Intel Deutschland GmbH
+  * Copyright (C) 2018-2023 Intel Corporation
+  */
+-
++#include <trace/events/xdp.h>
+ #include <linux/jiffies.h>
+ #include <linux/slab.h>
+ #include <linux/kernel.h>
+ #include <linux/skbuff.h>
+-#include <linux/netdevice.h>
+ #include <linux/etherdevice.h>
+ #include <linux/rcupdate.h>
+ #include <linux/export.h>
+@@ -5408,13 +5407,44 @@
+ }
+ EXPORT_SYMBOL(ieee80211_rx_list);
+ 
++struct bpf_prog *ieee80211_get_xdp_prog(struct net_device *mdev)
++{
++    return mdev->xdp_prog;
++}
++
+ void ieee80211_rx_napi(struct ieee80211_hw *hw, struct ieee80211_sta *pubsta,
+ 		       struct sk_buff *skb, struct napi_struct *napi)
+ {
+ 	struct sk_buff *tmp;
+ 	LIST_HEAD(list);
+-
+-
++	struct xdp_buff xdp;
++	 u32 action;
++	 struct ieee80211_local *local = hw_to_local(hw);
++	 struct ieee80211_sub_if_data *msdata;
++	 /* for research purpose only, I take just the first entry for my wireless card. ToDo */
++	 msdata = list_first_entry_or_null(&local->interfaces,
++	                              struct ieee80211_sub_if_data,
++	                              list);
++	 struct net_device *mdev = msdata->dev;
++	 if (ieee80211_get_xdp_prog(mdev)) {
++	     struct page *page = virt_to_head_page(skb->data);
++	     xdp.data_hard_start = page_address(page);
++	     xdp.data = skb->data;
++	     xdp_set_data_meta_invalid(&xdp);
++	     xdp.data_end = xdp.data + skb->len;
++	     action = bpf_prog_run_xdp(mdev->xdp_prog, &xdp);
++	     
++	     switch (action) {
++	        case XDP_PASS:
++	             break;
++	         case XDP_DROP:
++	             dev_kfree_skb(skb);
++	             return;
++	         default:
++	             break;
++	     }
++	 }
++	
+ 	/*
+ 	 * key references and virtual interfaces are protected using RCU
+ 	 * and this requires that we are in a read-side RCU section during
